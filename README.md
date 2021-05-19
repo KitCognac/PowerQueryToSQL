@@ -2,11 +2,12 @@
 Using Power Query in Excel as a SQL Server Import Function
 
 ## Main Concept
-Using Power Query Function to Create batch of .SQL Files then send them to SQL Server to import data.
+Using Power Query Function to Create bunch of SQL Queries then send them to SQL Server to import data.
 
 ## Power Query Setting
-By default, Excel will ask for permission everytime Native Query changed. Sending 100 SQL Insert Command Excel will ask 100 times, we need to turn that setting off. 
-In Excel, go to Ribbon Data => Get Data => Query Options => Security => Native Database Queries => Uncheck "Require user approval ...."
+Config 2 settings in Query Options ( in Excel, Ribbon Data => Get Data => Query Options => GLOBAL or Current Workbook depends on your needs )
+- In Data Load, tick "Never allow data previews to download in background". If this setting is not off, Import Queries will be sent to SQL Server automatically control by some trigger in Excel.
+- In Security, uncheck "Require user approval for new native database queries". By default, Excel will ask for permission everytime Native Query changed. Sending 100 SQL Insert Command Excel will ask 100 times, we need to turn that setting off
 
 ## For ADVANCED USER only
 This function will not replace SSIS or any kind of insert bulk, but it will: 
