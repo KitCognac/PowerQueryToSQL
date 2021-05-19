@@ -12,8 +12,8 @@ let
             let
                 // Set source as a PQ Source
                 COMBINE_COL_VALUE = PQ_DATASOURCE,
-                // SET a GUID for this PQ
-                PQ_GUID = "--" & Text.NewGuid() & "#(lf)",
+                // // SET a GUID for this PQ
+                // PQ_GUID = "--" & Text.NewGuid() & "#(lf)",
                 // Log Start Time
                 START_TIME = DateTime.LocalNow(),
                 // COMBINE ALL TABLES AND GETS ORIGINAL COLUMNS NAME
@@ -133,11 +133,9 @@ let
                                     __COL,
                                     "ADD_SELECT",
                                     each
-                                        " INSERT "
-                                        & UPLOAD_SQL_TABLE
-                                        & " WITH(TABLOCK) VALUES ( N'"
+                                        " SELECT N'"
                                         & [SQL_CONCAT_COLS]
-                                        & "' )"
+                                        & "' #(lf) "
                                 )
                     ),
                 // Convert all N'' to NULL value
@@ -169,32 +167,22 @@ let
                                 __TBL = [CLEAN_NULL],
                                 __BATCH_NO = [BATCH]
                             in
-                                PQ_GUID
-                                & (
-                                    if __BATCH_NO = 1 then
-                                        UPLOAD_SQL_BATCH_BEFORE & "#(lf)"
-                                    else
-                                        ""
-                                )
-                                & " SET DATEFORMAT DMY ; #(lf)"
-                                & " SET NOCOUNT ON ; #(lf)"
-                                & " BEGIN TRANSACTION #(lf)"
-                                & " DECLARE @START_TIME DATETIME = CURRENT_TIMESTAMP ; #(lf)"
-                                & Text.Combine(
-                                    __TBL[ADD_SELECT],
-                                    ";#(lf)"
-                                )
-                                & " COMMIT TRANSACTION #(lf)"
-                                & " SELECT  DATEDIFF(MILLISECOND,@START_TIME,CURRENT_TIMESTAMP) AS UPLOAD_TIME ;#(lf)"
-                                & (
-                                    if
-                                        __BATCH_NO
-                                        = List.Max(TMP_CLEAN_NULL_VALUE[BATCH])
-                                    then
-                                        ""
-                                    else
-                                        ""
-                                )
+                                if UPLOAD_SQL_IS_START = "YES" then
+                                    (
+                                        " SET DATEFORMAT DMY ; #(lf)"
+                                        & " DECLARE @START_TIME DATETIME = CURRENT_TIMESTAMP ; #(lf)"
+                                        & " INSERT INTO "
+                                        & UPLOAD_SQL_TABLE
+                                        & "#(lf)"
+                                        & Text.Combine(
+                                            __TBL[ADD_SELECT],
+                                            " UNION ALL #(lf)"
+                                        )
+                                        & "#(lf)"
+                                        & " SELECT DATEDIFF(MILLISECOND,@START_TIME,CURRENT_TIMESTAMP) AS UPLOAD_TIME ;#(lf)"
+                                    )
+                                else
+                                    " SELECT 0 AS UPLOAD_TIME ;#(lf)"
                     ),
                 // Filter out unnecessary columns
                 FILTER_STATEMENT_COLS =
@@ -206,27 +194,80 @@ let
                             "SQL_QUERY"
                         }
                     ),
-                // Set up SQL Connections
-                SQL_SOURCE =
-                    Sql.Database(
-                        UPLOAD_SQL_SERVER,
-                        UPLOAD_SQL_DATABASE
-                    ),
-                // Exec SQL Batch using Value.NativeQuery
+                CACHE_SQL_QUERIES = Table.Buffer(FILTER_STATEMENT_COLS),
+                // Buffer Table so that excel wont send another batchs
+                // Using List.Generate to ensure Batch is sent by orders
+                // ACCU_EXEC_TIME make sure previous query is done
                 EXEC_BATCHS =
-                    Table.AddColumn(
-                        FILTER_STATEMENT_COLS,
-                        "EXEC_TIME",
-                        each
-                            if UPLOAD_SQL_IS_START = "YES" then
-                                Value.NativeQuery(
-                                    SQL_SOURCE,
-                                    [SQL_QUERY]
-                                )
-                                    [UPLOAD_TIME]{0}
-                            else
-                                0
-                    //[UPLOAD_TIME]{0}
+                    Table.Buffer(
+                        Table.FromRecords(
+                            List.Generate(
+                                () =>
+                                    [
+                                        __BATCH = 0,
+                                        __ROWS = 0,
+                                        __QUERY =
+                                            " DECLARE @START_TIME DATETIME = CURRENT_TIMESTAMP ; #(lf)"
+                                            & " IF 1 = "
+                                            & (
+                                                if UPLOAD_SQL_IS_START = "YES" then
+                                                    "1"
+                                                else
+                                                    "0"
+                                            )
+                                            & " #(lf) BEGIN #(lf)"
+                                            & UPLOAD_SQL_BATCH_BEFORE
+                                            & "#(lf) END #(lf)"
+                                            & " SELECT DATEDIFF(MILLISECOND,@START_TIME,CURRENT_TIMESTAMP) AS UPLOAD_TIME ;#(lf)",
+                                        __EXEC =
+                                            Value.NativeQuery(
+                                                Sql.Database(
+                                                    UPLOAD_SQL_SERVER,
+                                                    UPLOAD_SQL_DATABASE
+                                                ),
+                                                __QUERY,
+                                                null,
+                                                [EnableFolding = false]
+                                            ),
+                                        __ACCU_EXEC_TIME = __EXEC[UPLOAD_TIME]{0}
+                                    ],
+                                each
+                                    [__BATCH]
+                                    <= List.Max(CACHE_SQL_QUERIES[BATCH]),
+                                each
+                                    [
+                                        __BATCH = [__BATCH] + 1,
+                                        __TBL =
+                                            Table.SelectRows(
+                                                CACHE_SQL_QUERIES,
+                                                each [BATCH] = __BATCH
+                                            ),
+                                        __ROWS = __TBL[ROWS]{0},
+                                        __QUERY = __TBL[SQL_QUERY]{0},
+                                        __EXEC =
+                                            Value.NativeQuery(
+                                                Sql.Database(
+                                                    UPLOAD_SQL_SERVER,
+                                                    UPLOAD_SQL_DATABASE
+                                                ),
+                                                __QUERY,
+                                                null,
+                                                [EnableFolding = false]
+                                            ),
+                                        __ACCU_EXEC_TIME =
+                                            __EXEC[UPLOAD_TIME]{0}
+                                            + [__ACCU_EXEC_TIME]
+                                    ],
+                                each
+                                    [
+                                        BATCH = [__BATCH],
+                                        ROWS = [__ROWS],
+                                        SQL_QUERY = [__QUERY],
+                                        EXEC_TIME = [__EXEC][UPLOAD_TIME]{0},
+                                        ACCU_EXEC_TIME = [__ACCU_EXEC_TIME]
+                                    ]
+                            )
+                        )
                     ),
                 GROUP_TIMING =
                     Table.Group(
@@ -243,7 +284,7 @@ let
                                 each
                                     Duration.ToText(
                                         Duration.From(
-                                            List.Sum([EXEC_TIME])
+                                            List.Max([ACCU_EXEC_TIME])
                                             / (1000 * 60 * 60 * 24)
                                         )
                                     ),
