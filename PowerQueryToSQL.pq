@@ -11,8 +11,10 @@ let
             let
                 // Set source as a PQ Source
                 COMBINE_COL_VALUE = PQ_DATASOURCE,
+                // SET a GUID for this PQ
+                PQ_GUID = "--" & Text.NewGuid() & "#(lf)",
                 // Log Start Time
-                StartTime = DateTime.LocalNow(),
+                START_TIME = DateTime.LocalNow(),
                 // COMBINE ALL TABLES AND GETS ORIGINAL COLUMNS NAME
                 TBL_COL_NAMES = Table.ColumnNames(COMBINE_COL_VALUE),
                 // Prepare Type TXT to convert
@@ -129,7 +131,12 @@ let
                                 Table.AddColumn(
                                     __COL,
                                     "ADD_SELECT",
-                                    each " SELECT N'" & [SQL_CONCAT_COLS] & "'"
+                                    each
+                                        " INSERT "
+                                        & UPLOAD_SQL_TABLE
+                                        & " WITH(TABLOCK) VALUES ( N'"
+                                        & [SQL_CONCAT_COLS]
+                                        & "' )"
                                 )
                     ),
                 // Convert all N'' to NULL value
@@ -149,33 +156,44 @@ let
                                     {"ADD_SELECT"}
                                 )
                     ),
+                // Temp Data Table Before Creat a Huge SQL Files
+                TMP_CLEAN_NULL_VALUE = Table.Buffer(CLEAN_NULL_VALUE),
                 // Combine all Rows into one SQL Query
                 INSERT_STATEMENT =
                     Table.AddColumn(
-                        CLEAN_NULL_VALUE,
+                        TMP_CLEAN_NULL_VALUE,
                         "SQL_QUERY",
                         each
                             let
                                 __TBL = [CLEAN_NULL],
                                 __BATCH_NO = [BATCH]
                             in
-                                (
+                                PQ_GUID
+                                & (
                                     if __BATCH_NO = 1 then
-                                        UPLOAD_SQL_BATCH_BEFORE
+                                        UPLOAD_SQL_BATCH_BEFORE & "#(lf)"
                                     else
                                         ""
                                 )
-                                & " SET DATEFORMAT DMY "
-                                & " DECLARE @START_TIME DATETIME = CURRENT_TIMESTAMP "
-                                & " ; INSERT INTO "
-                                & UPLOAD_SQL_TABLE
-                                & " WITH (TABLOCK) "
+                                & " SET DATEFORMAT DMY ; #(lf)"
+                                & " SET NOCOUNT ON ; #(lf)"
+                                & " BEGIN TRANSACTION #(lf)"
+                                & " DECLARE @START_TIME DATETIME = CURRENT_TIMESTAMP ; #(lf)"
                                 & Text.Combine(
                                     __TBL[ADD_SELECT],
-                                    " UNION ALL "
+                                    ";#(lf)"
                                 )
-                                & " GO "
-                                & " SELECT  DATEDIFF( MILLISECOND, @START_TIME, CURRENT_TIMESTAMP ) AS UPLOAD_TIME ;"
+                                & " COMMIT TRANSACTION #(lf)"
+                                & " SELECT  DATEDIFF(MILLISECOND,@START_TIME,CURRENT_TIMESTAMP) AS UPLOAD_TIME ;#(lf)"
+                                & (
+                                    if
+                                        __BATCH_NO
+                                        = List.Max(TMP_CLEAN_NULL_VALUE[BATCH])
+                                    then
+                                        ""
+                                    else
+                                        ""
+                                )
                     ),
                 // Filter out unnecessary columns
                 FILTER_STATEMENT_COLS =
@@ -204,41 +222,34 @@ let
                                 [SQL_QUERY]
                             )
                                 [UPLOAD_TIME]{0}
+                    //[UPLOAD_TIME]{0}
                     ),
-                // Filter out unnecessary columns
-                IMPORT_RESULT =
-                    Table.SelectColumns(
-                        EXEC_BATCHS,
-                        {
-                            "BATCH",
-                            "ROWS",
-                            "EXEC_TIME"
-                        }
-                    ),
-                // Group all rows to make sure all batch sent to server. 
-                // This step trying to prevent unexpected import partial data when user hover over Queries in Queries&Connection Task Pane.
-                TIME_RESULT =
+                GROUP_TIMING =
                     Table.Group(
-                        IMPORT_RESULT,
+                        EXEC_BATCHS,
                         {},
                         {
                             {
-                                "EXEC_TIME",
-                                each List.Sum([EXEC_TIME]),
+                                "ROWS",
+                                each List.Sum([ROWS]),
                                 type number
                             },
                             {
-                                "ROWS_AFFECTED",
-                                each List.Sum([ROWS]),
+                                "SQL_EXEC_TIME",
+                                each List.Sum([EXEC_TIME]),
                                 type number
                             }
                         }
                     ),
                 PQ_EXEC_TIME =
                     Table.AddColumn(
-                        TIME_RESULT,
+                        GROUP_TIMING,
                         "PQ_EXEC_TIME",
-                        each Duration.ToText(DateTime.LocalNow() - StartTime)
+                        each
+                            let
+                                __END_TIME = DateTime.LocalNow()
+                            in
+                                Duration.ToText(__END_TIME - START_TIME)
                     )
             in
                 PQ_EXEC_TIME,
