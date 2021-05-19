@@ -17,3 +17,8 @@ This function will not replace SSIS or any kind of insert bulk, but it will:
 ## Limitation
  - Unexpected import Data when user hover queries in Queries&Connection Task Pane
  - Slow compared to insert Bulk because rely on SQL Server implicit conversion from string and multiple SQL Files Reading.
+
+## Usage
+- This function works best and fast for importing data under 100k rows.
+- Create and bind a User-Defined Parameter to IS_START Parameter of this function. After import job are done, set that parameter to NO so that all import job can not import any data when hover over queries in Queries&Connection Task Pane or when PQ trying to download preview.
+- Please cross-check after import and report any strange phenomenon like duplicated imported data or DDL&DML not exec.
