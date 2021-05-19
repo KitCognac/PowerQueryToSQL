@@ -236,8 +236,14 @@ let
                             },
                             {
                                 "SQL_EXEC_TIME",
-                                each List.Sum([EXEC_TIME]),
-                                type number
+                                each
+                                    Duration.ToText(
+                                        Duration.From(
+                                            List.Sum([EXEC_TIME])
+                                            / (1000 * 60 * 60 * 24)
+                                        )
+                                    ),
+                                type any
                             }
                         }
                     ),
@@ -250,9 +256,15 @@ let
                                 __END_TIME = DateTime.LocalNow()
                             in
                                 Duration.ToText(__END_TIME - START_TIME)
+                    ),
+                ADD_TARGET_NAME =
+                    Table.AddColumn(
+                        PQ_EXEC_TIME,
+                        "TARGET",
+                        each UPLOAD_SQL_TABLE
                     )
             in
-                PQ_EXEC_TIME,
+                ADD_TARGET_NAME,
     // Add documentation
     PowerQueryToSQLType =
         type function (//
