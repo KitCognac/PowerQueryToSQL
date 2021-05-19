@@ -6,7 +6,8 @@ let
         UPLOAD_SQL_DATABASE as text, //
         UPLOAD_SQL_TABLE as text, //
         UPLOAD_SQL_BATCH_ROWS as number, // 
-        UPLOAD_SQL_BATCH_BEFORE as any//
+        UPLOAD_SQL_BATCH_BEFORE as any, //
+        UPLOAD_SQL_IS_START as text//   
         ) as table =>
             let
                 // Set source as a PQ Source
@@ -217,11 +218,14 @@ let
                         FILTER_STATEMENT_COLS,
                         "EXEC_TIME",
                         each
-                            Value.NativeQuery(
-                                SQL_SOURCE,
-                                [SQL_QUERY]
-                            )
-                                [UPLOAD_TIME]{0}
+                            if UPLOAD_SQL_IS_START = "YES" then
+                                Value.NativeQuery(
+                                    SQL_SOURCE,
+                                    [SQL_QUERY]
+                                )
+                                    [UPLOAD_TIME]{0}
+                            else
+                                0
                     //[UPLOAD_TIME]{0}
                     ),
                 GROUP_TIMING =
@@ -262,9 +266,15 @@ let
                         PQ_EXEC_TIME,
                         "TARGET",
                         each UPLOAD_SQL_TABLE
+                    ),
+                ADD_IS_START_STATUS =
+                    Table.AddColumn(
+                        ADD_TARGET_NAME,
+                        "IS_START",
+                        each UPLOAD_SQL_IS_START
                     )
             in
-                ADD_TARGET_NAME,
+                ADD_IS_START_STATUS,
     // Add documentation
     PowerQueryToSQLType =
         type function (//
@@ -341,6 +351,22 @@ let
                     Formatting.IsMultiLine = true,
                     Formatting.IsCode = true
                 ]
+            ), //
+        UPLOAD_SQL_IS_START as
+            (
+                type text
+                meta
+                [
+                    Documentation.FieldCaption = "Functions Start",
+                    Documentation.FieldDescription = "Ex: YES, NO",
+                    Documentation.AllowedValues = {
+                        "NO",
+                        "YES"
+                    },
+                    Documentation.SampleValues = {
+                        "YES"
+                    }
+                ]
             )) as table
         meta
         [
@@ -368,9 +394,10 @@ let
                     ""AdventureWorksDW2020"",
                     ""dbo.Sales"",
                     1000,
-                    "" TRUNCATE TABLE dbo.Sales ""
+                    "" TRUNCATE TABLE dbo.Sales "",
+                    ""NO"" //Function only runs with YES value. Create Parameter link to this or set manually.
                     )",
-                    Result = "#table({""EXEC_TIME"", ""ROWS_AFFECTED"",""PQ_EXEC_TIME""}, {{""8000ms"",5000,""00:00:01.2672214""}})"
+                    Result = "Single Rows Table. Update Later."
                 ]
             }
         ]
