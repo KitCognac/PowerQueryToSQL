@@ -6,14 +6,18 @@ let
         UPLOAD_SQL_DATABASE as text, //
         UPLOAD_SQL_TABLE as text, //
         UPLOAD_SQL_BATCH_ROWS as number, // 
-        UPLOAD_SQL_BATCH_BEFORE as any, //
-        UPLOAD_SQL_IS_START as text//   
+        UPLOAD_SQL_IS_START as text, //   
+        UPLOAD_SQL_DDL as text, //
+        UPLOAD_SQL_DML as text//
         ) as table =>
             let
                 // Set source as a PQ Source
                 COMBINE_COL_VALUE = PQ_DATASOURCE,
-                // // SET a GUID for this PQ
-                // PQ_GUID = "--" & Text.NewGuid() & "#(lf)",
+                // SET a temp table name
+                PQ_GUID =
+                    // "tempdb."
+                    UPLOAD_SQL_TABLE
+                    & Text.Replace(Text.NewGuid(), "-", ""),
                 // Log Start Time
                 START_TIME = DateTime.LocalNow(),
                 // COMBINE ALL TABLES AND GETS ORIGINAL COLUMNS NAME
@@ -172,7 +176,7 @@ let
                                         " SET DATEFORMAT DMY ; #(lf)"
                                         & " DECLARE @START_TIME DATETIME = CURRENT_TIMESTAMP ; #(lf)"
                                         & " INSERT INTO "
-                                        & UPLOAD_SQL_TABLE
+                                        & PQ_GUID
                                         & "#(lf)"
                                         & Text.Combine(
                                             __TBL[ADD_SELECT],
@@ -199,76 +203,129 @@ let
                 // Using List.Generate to ensure Batch is sent by orders
                 // ACCU_EXEC_TIME make sure previous query is done
                 EXEC_BATCHS =
-                    Table.Buffer(
-                        Table.FromRecords(
-                            List.Generate(
-                                () =>
-                                    [
-                                        __BATCH = 0,
-                                        __ROWS = 0,
-                                        __QUERY =
-                                            " DECLARE @START_TIME DATETIME = CURRENT_TIMESTAMP ; #(lf)"
-                                            & " IF 1 = "
-                                            & (
+                    let
+                        // TEMP Final Batch Number
+                        __FINAL_BATCH_NO = List.Max(CACHE_SQL_QUERIES[BATCH]),
+                        __SQL_CONNECTION =
+                            Sql.Database(
+                                UPLOAD_SQL_SERVER,
+                                UPLOAD_SQL_DATABASE
+                            ),
+                        // Clean-up any leftover temptable because of disconnection
+                        // Make sure only lastest queries running
+                        __INIT =
+                            "#(lf)
+                        DECLARE @LOOP_DROP_TBL VARCHAR (255) ;
+                        DECLARE LOOP_DROP_TBL CURSOR FOR
+                            SELECT
+                                'DROP TABLE IF EXISTS ' + TABLE_SCHEMA + '.' + TABLE_NAME + ''
+                            FROM
+                                INFORMATION_SCHEMA.TABLES
+                            WHERE
+                                (TABLE_SCHEMA + '.' + TABLE_NAME) LIKE '"
+                            & UPLOAD_SQL_TABLE
+                            & "________________________________' ;
+
+                        OPEN LOOP_DROP_TBL ;
+                        WHILE 1 = 1
+                            BEGIN
+                                FETCH LOOP_DROP_TBL
+                                INTO
+                                    @LOOP_DROP_TBL ;
+                                IF @@fetch_status != 0
+                                    BREAK ;
+                                EXEC (@LOOP_DROP_TBL) ;
+                            END ;
+                        CLOSE LOOP_DROP_TBL ;
+                        DEALLOCATE LOOP_DROP_TBL ;
+                        #(lf)",
+                        __DDL_EXEC =
+                            " DECLARE @START_TIME DATETIME = CURRENT_TIMESTAMP ; #(lf)"
+                            & UPLOAD_SQL_DDL
+                            & "#(lf)"
+                            & " SELECT DATEDIFF(MILLISECOND,@START_TIME,CURRENT_TIMESTAMP) AS UPLOAD_TIME ;#(lf)"
+                            & " SELECT * INTO "
+                            & PQ_GUID
+                            & " FROM "
+                            & UPLOAD_SQL_TABLE
+                            & " WHERE 1 = 0 ;#(lf)",
+                        __DML_EXEC =
+                            "#(lf)"
+                            & " BEGIN TRAN #(lf)"
+                            & UPLOAD_SQL_DML
+                            & "#(lf)"
+                            & " INSERT INTO "
+                            & UPLOAD_SQL_TABLE
+                            & " WITH(TABLOCK) #(lf)"
+                            & " SELECT * FROM "
+                            & PQ_GUID
+                            & "#(lf)"
+                            & " DROP TABLE IF EXISTS "
+                            & PQ_GUID
+                            & "#(lf)"
+                            & " COMMIT TRAN #(lf)"
+                    in
+                        Table.Buffer(
+                            Table.FromRecords(
+                                List.Generate(
+                                    () =>
+                                        [
+                                            __BATCH = 0,
+                                            __ROWS = 0,
+                                            __QUERY =
                                                 if UPLOAD_SQL_IS_START = "YES" then
-                                                    "1"
+                                                    __INIT & __DDL_EXEC
                                                 else
-                                                    "0"
-                                            )
-                                            & " #(lf) BEGIN #(lf)"
-                                            & UPLOAD_SQL_BATCH_BEFORE
-                                            & "#(lf) END #(lf)"
-                                            & " SELECT DATEDIFF(MILLISECOND,@START_TIME,CURRENT_TIMESTAMP) AS UPLOAD_TIME ;#(lf)",
-                                        __EXEC =
-                                            Value.NativeQuery(
-                                                Sql.Database(
-                                                    UPLOAD_SQL_SERVER,
-                                                    UPLOAD_SQL_DATABASE
+                                                    " SELECT 0 AS UPLOAD_TIME ;#(lf)",
+                                            __EXEC =
+                                                Value.NativeQuery(
+                                                    __SQL_CONNECTION,
+                                                    __QUERY,
+                                                    null,
+                                                    [EnableFolding = false]
+                                                )
+                                        // __ACCU_EXEC_TIME = __EXEC[UPLOAD_TIME]{0}
+                                        ],
+                                    each [__BATCH] <= __FINAL_BATCH_NO,
+                                    each
+                                        [
+                                            __BATCH = [__BATCH] + 1,
+                                            __TBL = CACHE_SQL_QUERIES{[BATCH = __BATCH]},
+                                            // __ROWS = __TBL[ROWS]{0},
+                                            __ROWS = CACHE_SQL_QUERIES{[BATCH = __BATCH]}[ROWS],
+                                            __QUERY =
+                                                __TBL[SQL_QUERY]
+                                                & (
+                                                    if __BATCH = __FINAL_BATCH_NO then
+                                                        if UPLOAD_SQL_IS_START = "YES" then
+                                                            __DML_EXEC
+                                                        else
+                                                            " SELECT 0 AS UPLOAD_TIME ;#(lf)"
+                                                    else
+                                                        ""
                                                 ),
-                                                __QUERY,
-                                                null,
-                                                [EnableFolding = false]
-                                            ),
-                                        __ACCU_EXEC_TIME = __EXEC[UPLOAD_TIME]{0}
-                                    ],
-                                each
-                                    [__BATCH]
-                                    <= List.Max(CACHE_SQL_QUERIES[BATCH]),
-                                each
-                                    [
-                                        __BATCH = [__BATCH] + 1,
-                                        __TBL =
-                                            Table.SelectRows(
-                                                CACHE_SQL_QUERIES,
-                                                each [BATCH] = __BATCH
-                                            ),
-                                        __ROWS = __TBL[ROWS]{0},
-                                        __QUERY = __TBL[SQL_QUERY]{0},
-                                        __EXEC =
-                                            Value.NativeQuery(
-                                                Sql.Database(
-                                                    UPLOAD_SQL_SERVER,
-                                                    UPLOAD_SQL_DATABASE
-                                                ),
-                                                __QUERY,
-                                                null,
-                                                [EnableFolding = false]
-                                            ),
-                                        __ACCU_EXEC_TIME =
-                                            __EXEC[UPLOAD_TIME]{0}
-                                            + [__ACCU_EXEC_TIME]
-                                    ],
-                                each
-                                    [
-                                        BATCH = [__BATCH],
-                                        ROWS = [__ROWS],
-                                        SQL_QUERY = [__QUERY],
-                                        EXEC_TIME = [__EXEC][UPLOAD_TIME]{0},
-                                        ACCU_EXEC_TIME = [__ACCU_EXEC_TIME]
-                                    ]
+                                            __EXEC =
+                                                Value.NativeQuery(
+                                                    __SQL_CONNECTION,
+                                                    __QUERY,
+                                                    null,
+                                                    [EnableFolding = false]
+                                                )
+                                        // __ACCU_EXEC_TIME =
+                                        //     __EXEC[UPLOAD_TIME]{0}
+                                        //     + [__ACCU_EXEC_TIME]
+                                        ],
+                                    each
+                                        [
+                                            BATCH = [__BATCH],
+                                            ROWS = [__ROWS],
+                                            SQL_QUERY = [__QUERY],
+                                            EXEC_TIME = [__EXEC][UPLOAD_TIME]{0}
+                                        // ACCU_EXEC_TIME = [__ACCU_EXEC_TIME]
+                                        ]
+                                )
                             )
-                        )
-                    ),
+                        ),
                 GROUP_TIMING =
                     Table.Group(
                         EXEC_BATCHS,
@@ -284,7 +341,7 @@ let
                                 each
                                     Duration.ToText(
                                         Duration.From(
-                                            List.Max([ACCU_EXEC_TIME])
+                                            List.Sum([EXEC_TIME])
                                             / (1000 * 60 * 60 * 24)
                                         )
                                     ),
@@ -379,20 +436,6 @@ let
                     }
                 ]
             ), //
-        UPLOAD_SQL_BATCH_BEFORE as
-            (
-                type text
-                meta
-                [
-                    Documentation.FieldCaption = "SQL Snippet to be done before begin upload. ",
-                    Documentation.FieldDescription = "Ex: TRUNCATE TABLE dbo.Dates . If error add space or ; in the end",
-                    Documentation.SampleValues = {
-                        " TRUNCATE TABLE dbo.Sales "
-                    },
-                    Formatting.IsMultiLine = true,
-                    Formatting.IsCode = true
-                ]
-            ), //
         UPLOAD_SQL_IS_START as
             (
                 type text
@@ -407,6 +450,34 @@ let
                     Documentation.SampleValues = {
                         "YES"
                     }
+                ]
+            ), //
+        UPLOAD_SQL_DDL as
+            (
+                type text
+                meta
+                [
+                    Documentation.FieldCaption = "DDL Statements. ",
+                    Documentation.FieldDescription = "DDL Statemnents to be executed",
+                    Documentation.SampleValues = {
+                        " DROP TABLE... CREATE TABLE... "
+                    },
+                    Formatting.IsMultiLine = true,
+                    Formatting.IsCode = true
+                ]
+            ), //
+        UPLOAD_SQL_BATCH_DML as
+            (
+                type text
+                meta
+                [
+                    Documentation.FieldCaption = "DML Statements ",
+                    Documentation.FieldDescription = "DML Statemnents to be executed",
+                    Documentation.SampleValues = {
+                        " TRUNCATE TABLE... DELETE FROM... "
+                    },
+                    Formatting.IsMultiLine = true,
+                    Formatting.IsCode = true
                 ]
             )) as table
         meta
