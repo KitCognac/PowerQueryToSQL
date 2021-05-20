@@ -2,7 +2,16 @@
 Using Power Query in Excel as a SQL Server Import Function
 
 ## Main Concept
-Using Power Query Function to Create bunch of SQL Queries then send them to SQL Server to import data.
+- Using Power Query Function to Create bunch of SQL Queries then send them to SQL Server to import data.
+- Workflow:
+  - INIT ->
+  - EXEC DDL -> 
+  - INSERT DATA TO TMP TABLE -> 
+  - BEGIN TRAN -> 
+  - EXEC DML -> 
+  - INSERT DATA FROM TMP TABLE TO TARGET -> 
+  - COMMIT TRAN
+- INIT Step will try to clear all left over temp of previous session that disconnect or just some preview exec.
 
 ## Power Query Setting
 Config 2 settings in Query Options ( in Excel, Ribbon Data => Get Data => Query Options => GLOBAL or Current Workbook depends on your needs )
