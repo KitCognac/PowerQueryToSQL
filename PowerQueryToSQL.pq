@@ -301,16 +301,21 @@ let
                     INNER JOIN
                         @LOG_PERF AS ENDING ON ENDING.ID = STARTING.ID + 1 ;#(lf)",
                         __SQL_COMBINE =
-                            __INIT
-                            & ";#(lf)"
-                            & __DDL_EXEC
-                            & ";#(lf)"
-                            & Text.Combine(
-                                CACHE_SQL_QUERIES[SQL_QUERY],
-                                ";#(lf)"
-                            )
-                            & ";#(lf)"
-                            & __DML_EXEC
+                            if UPLOAD_SQL_IS_START = "YES" then
+                                (
+                                    __INIT
+                                    & ";#(lf)"
+                                    & __DDL_EXEC
+                                    & ";#(lf)"
+                                    & Text.Combine(
+                                        CACHE_SQL_QUERIES[SQL_QUERY],
+                                        ";#(lf)"
+                                    )
+                                    & ";#(lf)"
+                                    & __DML_EXEC
+                                )
+                            else
+                                " SELECT 'SET IS_START TO YES TO BEGIN UPLOAD' WARNING "
                     in
                         // __SQL_COMBINE
                         Value.NativeQuery(
@@ -454,10 +459,11 @@ let
                     ""AdventureWorksDW2020"",
                     ""dbo.Sales"",
                     1000,
-                    "" TRUNCATE TABLE dbo.Sales "",
-                    ""NO"" //Function only runs with YES value. Create Parameter link to this or set manually.
+                    ""NO"",
+                    "" CREATE TABLE dbo.Sales "",
+                    "" TRUNCATE TABLE dbo.Sales ""
                     )",
-                    Result = "Single Rows Table. Update Later."
+                    Result = "Update Later."
                 ]
             }
         ]
