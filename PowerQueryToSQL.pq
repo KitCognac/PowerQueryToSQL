@@ -15,9 +15,14 @@ let
                 COMBINE_COL_VALUE = PQ_DATASOURCE,
                 // SET a temp table name
                 PQ_GUID =
-                    // "tempdb."
-                    UPLOAD_SQL_TABLE
-                    & Text.Replace(Text.NewGuid(), "-", ""),
+                    let
+                        __TBL_NAME =
+                            // "tempdb."
+                            "#"
+                            //& UPLOAD_SQL_TABLE
+                            & Text.Replace(Text.NewGuid(), "-", "")
+                    in
+                        __TBL_NAME,
                 // Log Start Time
                 START_TIME = DateTime.LocalNow(),
                 // COMBINE ALL TABLES AND GETS ORIGINAL COLUMNS NAME
@@ -169,12 +174,12 @@ let
                         each
                             let
                                 __TBL = [CLEAN_NULL],
-                                __BATCH_NO = [BATCH]
+                                __BATCH_NO = [BATCH],
+                                __ROWS = [ROWS]
                             in
                                 if UPLOAD_SQL_IS_START = "YES" then
                                     (
                                         " SET DATEFORMAT DMY ; #(lf)"
-                                        & " DECLARE @START_TIME DATETIME = CURRENT_TIMESTAMP ; #(lf)"
                                         & " INSERT INTO "
                                         & PQ_GUID
                                         & "#(lf)"
@@ -183,7 +188,11 @@ let
                                             " UNION ALL #(lf)"
                                         )
                                         & "#(lf)"
-                                        & " SELECT DATEDIFF(MILLISECOND,@START_TIME,CURRENT_TIMESTAMP) AS UPLOAD_TIME ;#(lf)"
+                                        & " INSERT INTO @LOG_PERF ([PROCEDURE], [AFFECTED ROWS], [TABLE]) SELECT 'INSERT TMP TABLE', "
+                                        & Text.From(__ROWS)
+                                        & ",'"
+                                        & PQ_GUID
+                                        & "' ;#(lf)"
                                     )
                                 else
                                     " SELECT 0 AS UPLOAD_TIME ;#(lf)"
@@ -240,10 +249,20 @@ let
                         DEALLOCATE LOOP_DROP_TBL ;
                         #(lf)",
                         __DDL_EXEC =
-                            " DECLARE @START_TIME DATETIME = CURRENT_TIMESTAMP ; #(lf)"
+                            " DECLARE @LOG_PERF TABLE
+                    (
+                        ID              INT				IDENTITY(1, 1),
+                        [PROCEDURE]     VARCHAR(200)	NOT NULL,
+                        TIMING          DATETIME2		NOT NULL DEFAULT GETDATE(),
+                        [TABLE]			VARCHAR(200)	NULL,
+                        [AFFECTED ROWS] INT				NULL
+                    ) ;
+                    INSERT INTO @LOG_PERF ([PROCEDURE], [AFFECTED ROWS]) SELECT 'Starting', 0 ;#(lf)"
                             & UPLOAD_SQL_DDL
                             & "#(lf)"
-                            & " SELECT DATEDIFF(MILLISECOND,@START_TIME,CURRENT_TIMESTAMP) AS UPLOAD_TIME ;#(lf)"
+                            & " INSERT INTO @LOG_PERF ([PROCEDURE], [AFFECTED ROWS], [TABLE]) SELECT 'EXEC DDL', 0, '"
+                            & UPLOAD_SQL_TABLE
+                            & "' ;#(lf)"
                             & " SELECT * INTO "
                             & PQ_GUID
                             & " FROM "
@@ -260,119 +279,48 @@ let
                             & " SELECT * FROM "
                             & PQ_GUID
                             & "#(lf)"
+                            & " INSERT INTO @LOG_PERF ([PROCEDURE], [AFFECTED ROWS], [TABLE]) SELECT 'EXEC DML', (SELECT COUNT(*) FROM "
+                            & PQ_GUID
+                            & "), '"
+                            & UPLOAD_SQL_TABLE
+                            & "' ;#(lf)"
                             & " DROP TABLE IF EXISTS "
                             & PQ_GUID
                             & "#(lf)"
                             & " COMMIT TRAN #(lf)"
-                    in
-                        Table.Buffer(
-                            Table.FromRecords(
-                                List.Generate(
-                                    () =>
-                                        [
-                                            __BATCH = 0,
-                                            __ROWS = 0,
-                                            __QUERY =
-                                                if UPLOAD_SQL_IS_START = "YES" then
-                                                    __INIT & __DDL_EXEC
-                                                else
-                                                    " SELECT 0 AS UPLOAD_TIME ;#(lf)",
-                                            __EXEC =
-                                                Value.NativeQuery(
-                                                    __SQL_CONNECTION,
-                                                    __QUERY,
-                                                    null,
-                                                    [EnableFolding = false]
-                                                )
-                                        // __ACCU_EXEC_TIME = __EXEC[UPLOAD_TIME]{0}
-                                        ],
-                                    each [__BATCH] <= __FINAL_BATCH_NO,
-                                    each
-                                        [
-                                            __BATCH = [__BATCH] + 1,
-                                            __TBL = CACHE_SQL_QUERIES{[BATCH = __BATCH]},
-                                            // __ROWS = __TBL[ROWS]{0},
-                                            __ROWS = CACHE_SQL_QUERIES{[BATCH = __BATCH]}[ROWS],
-                                            __QUERY =
-                                                __TBL[SQL_QUERY]
-                                                & (
-                                                    if __BATCH = __FINAL_BATCH_NO then
-                                                        if UPLOAD_SQL_IS_START = "YES" then
-                                                            __DML_EXEC
-                                                        else
-                                                            " SELECT 0 AS UPLOAD_TIME ;#(lf)"
-                                                    else
-                                                        ""
-                                                ),
-                                            __EXEC =
-                                                Value.NativeQuery(
-                                                    __SQL_CONNECTION,
-                                                    __QUERY,
-                                                    null,
-                                                    [EnableFolding = false]
-                                                )
-                                        // __ACCU_EXEC_TIME =
-                                        //     __EXEC[UPLOAD_TIME]{0}
-                                        //     + [__ACCU_EXEC_TIME]
-                                        ],
-                                    each
-                                        [
-                                            BATCH = [__BATCH],
-                                            ROWS = [__ROWS],
-                                            SQL_QUERY = [__QUERY],
-                                            EXEC_TIME = [__EXEC][UPLOAD_TIME]{0}
-                                        // ACCU_EXEC_TIME = [__ACCU_EXEC_TIME]
-                                        ]
-                                )
+                            & "
+                    SELECT
+                        ENDING.[PROCEDURE],
+                        DATEDIFF( ms, STARTING.TIMING, ENDING.TIMING ) AS EXEC_TIME,
+                        STARTING.TIMING                                AS START_TIME,
+                        ENDING.TIMING                                  AS END_TIME,
+                        ENDING.[TABLE]                                 AS TBL,
+                        ENDING.[AFFECTED ROWS]                         AS ROWS
+                    FROM
+                        @LOG_PERF AS STARTING
+                    INNER JOIN
+                        @LOG_PERF AS ENDING ON ENDING.ID = STARTING.ID + 1 ;#(lf)",
+                        __SQL_COMBINE =
+                            __INIT
+                            & ";#(lf)"
+                            & __DDL_EXEC
+                            & ";#(lf)"
+                            & Text.Combine(
+                                CACHE_SQL_QUERIES[SQL_QUERY],
+                                ";#(lf)"
                             )
-                        ),
-                GROUP_TIMING =
-                    Table.Group(
-                        EXEC_BATCHS,
-                        {},
-                        {
-                            {
-                                "ROWS",
-                                each List.Sum([ROWS]),
-                                type number
-                            },
-                            {
-                                "SQL_EXEC_TIME",
-                                each
-                                    Duration.ToText(
-                                        Duration.From(
-                                            List.Sum([EXEC_TIME])
-                                            / (1000 * 60 * 60 * 24)
-                                        )
-                                    ),
-                                type any
-                            }
-                        }
-                    ),
-                PQ_EXEC_TIME =
-                    Table.AddColumn(
-                        GROUP_TIMING,
-                        "PQ_EXEC_TIME",
-                        each
-                            let
-                                __END_TIME = DateTime.LocalNow()
-                            in
-                                Duration.ToText(__END_TIME - START_TIME)
-                    ),
-                ADD_TARGET_NAME =
-                    Table.AddColumn(
-                        PQ_EXEC_TIME,
-                        "TARGET",
-                        each UPLOAD_SQL_TABLE
-                    ),
-                ADD_IS_START_STATUS =
-                    Table.AddColumn(
-                        ADD_TARGET_NAME,
-                        "IS_START",
-                        each UPLOAD_SQL_IS_START
-                    )
+                            & ";#(lf)"
+                            & __DML_EXEC
+                    in
+                        // __SQL_COMBINE
+                        Value.NativeQuery(
+                            __SQL_CONNECTION,
+                            __SQL_COMBINE,
+                            null,
+                            [EnableFolding = false]
+                        )
             in
-                ADD_IS_START_STATUS,
+                EXEC_BATCHS,
     // Add documentation
     PowerQueryToSQLType =
         type function (//
